@@ -19,6 +19,13 @@ export interface ShareStatus {
   share_password?: string;
   dev_password?: string;
   authorized?: boolean;
+  is_owner?: boolean;
+}
+
+export interface RestartResult {
+  success: boolean;
+  share_password?: string;
+  ownerToken?: string;
 }
 
 export interface UploadItem {
@@ -33,6 +40,7 @@ export interface PreviewData {
   content?: string;
   url?: string;
   message?: string;
+  svg?: boolean;
 }
 
 export interface DownloadProgressState {

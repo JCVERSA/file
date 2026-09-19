@@ -1,8 +1,7 @@
-import React, { isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import React, { isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { animate, useMotionValue, useMotionValueEvent, useReducedMotion } from 'motion/react';
 import {
   ChevronDown,
-  Paperclip,
   X,
   FileText,
   HelpCircle,

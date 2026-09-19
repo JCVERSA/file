@@ -2,20 +2,21 @@ import React, { useState } from 'react';
 import { Lock, Copy, Check, Sparkles } from 'lucide-react';
 import type { ShareStatus } from '../types';
 
-interface ShareHeaderProps {
-  filesCount: number;
-  status: ShareStatus | null;
-  shareUrl: string;
-  remainingText: string;
-  copiedText: string;
-  showQr: boolean;
-  setShowQr: (val: boolean) => void;
-  onCopyLink: () => void;
-  onLogout: (e: React.FormEvent) => void;
-  onStopShare: () => void;
-  onOpenSmopi?: () => void;
-  extraActions?: React.ReactNode;
-}
+  interface ShareHeaderProps {
+    filesCount: number;
+    status: ShareStatus | null;
+    shareUrl: string;
+    remainingText: string;
+    copiedText: string;
+    showQr: boolean;
+    setShowQr: (val: boolean) => void;
+    onCopyLink: () => void;
+    onLogout: (e: React.FormEvent) => void;
+    onStopShare: () => void;
+    onOpenSmopi?: () => void;
+    extraActions?: React.ReactNode;
+    isOwner?: boolean;
+  }
 
 export const ShareHeader: React.FC<ShareHeaderProps> = ({
   filesCount,
@@ -29,7 +30,8 @@ export const ShareHeader: React.FC<ShareHeaderProps> = ({
   onLogout,
   onStopShare,
   onOpenSmopi,
-  extraActions
+  extraActions,
+  isOwner = true
 }) => {
   const [copiedPassword, setCopiedPassword] = useState(false);
 
@@ -87,16 +89,26 @@ export const ShareHeader: React.FC<ShareHeaderProps> = ({
               <span>Lock</span>
             </button>
           </form>
-          <button
-            id="stopShare"
-            className="button fs-stop-btn"
-            type="button"
-            aria-label="Stop sharing"
-            onClick={onStopShare}
-          >
-            <span className="fs-stop-icon" aria-hidden="true">&times;</span>
-            <span>Stop share</span>
-          </button>
+          {isOwner ? (
+            <button
+              id="stopShare"
+              className="button fs-stop-btn"
+              type="button"
+              aria-label="Stop sharing"
+              onClick={onStopShare}
+            >
+              <span className="fs-stop-icon" aria-hidden="true">&times;</span>
+              <span>Stop share</span>
+            </button>
+          ) : (
+            <span
+              className="muted"
+              title="Only the share owner can stop the share"
+              style={{ fontSize: '11px', maxWidth: '180px', textAlign: 'right' }}
+            >
+              Only the share owner can stop the share.
+            </span>
+          )}
         </div>
       </div>
 

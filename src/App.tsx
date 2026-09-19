@@ -3,20 +3,16 @@ import {
   FileText,
   FileImage,
   FileArchive,
-  FileCode,
   File,
   Grid,
   List,
   UploadCloud,
-  ArrowUpDown,
   RefreshCw,
   Search,
-  ExternalLink,
   Sparkles,
   Check,
   SlidersHorizontal,
   FilePlus,
-  Edit3,
   Folder
 } from 'lucide-react';
 
@@ -377,16 +373,14 @@ export default function App() {
   };
 
   const getFileIcon = (file: SharedFile) => {
-    if (file.category === 'archive') {
+    // Backend categories are plural: 'archives' | 'images' | 'documents' | 'other'.
+    if (file.category === 'archives') {
       return <FileArchive className="w-5 h-5 text-amber-400" style={{ minWidth: '20px' }} />;
     }
-    if (file.category === 'image') {
+    if (file.category === 'images') {
       return <FileImage className="w-5 h-5 text-emerald-400" style={{ minWidth: '20px' }} />;
     }
-    if (file.category === 'code') {
-      return <FileCode className="w-5 h-5 text-sky-400" style={{ minWidth: '20px' }} />;
-    }
-    if (file.category === 'document') {
+    if (file.category === 'documents') {
       return <FileText className="w-5 h-5 text-indigo-400" style={{ minWidth: '20px' }} />;
     }
     return <File className="w-5 h-5 text-slate-400" style={{ minWidth: '20px' }} />;
@@ -705,8 +699,14 @@ export default function App() {
         method: 'POST',
         headers: getAuthHeaders()
       });
+      const data = await response.json().catch(() => ({}));
       if (response.ok) {
+        if (data.share_password) {
+          setStatus((prev) => (prev ? { ...prev, share_password: data.share_password, stopped: false } : prev));
+        }
         checkAuth();
+      } else {
+        showToast('Restart Failed', data.error || 'Only the share owner can restart the share.', undefined);
       }
     } catch (_) {}
   };
@@ -1117,6 +1117,7 @@ export default function App() {
           onLogout={handleLogout}
           onStopShare={() => setShowStopConfirm(true)}
           onOpenSmopi={() => setIsSmopiOpen(true)}
+          isOwner={status?.is_owner ?? true}
           extraActions={
             <div style={{ position: 'relative' }}>
               <button
@@ -1685,10 +1686,6 @@ export default function App() {
           fetchStatus();
         }}
         authToken={authToken}
-        onOpenFilePreview={(fileName) => {
-          const found = files.find((f) => f.name === fileName);
-          if (found) handlePreviewClick(found);
-        }}
       />
 
       {/* Direct File Editor Modal */}
