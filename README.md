@@ -14,7 +14,33 @@ This repository contains two implementations:
 > Its `server.py` and `templates/` are read-only reference material and are not
 > executed by any npm script.
 
-## Quick start
+## Install (one-liner)
+
+The recommended way to run the share on a server. Installs Node.js 22+ if
+needed, clones the repo, builds `dist/server.mjs`, and exposes the `fsd`
+command (start/stop/status/env/update/uninstall).
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/JCVERSA/file/main/scripts/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/JCVERSA/file/main/scripts/install.ps1 | iex
+```
+
+Then configure a password and start:
+
+```bash
+fsd env set SHARE_PASSWORD my-secret
+fsd start        # production server (background), default port 3000
+fsd status       # share stats
+```
+
+See `fsd help` for the full command set, or `fsd uninstall` to remove.
+The installer also accepts `--source-dir <checkout>` to install from local
+code and `--branch <name>` to pick a branch.
+
+## Quick start (developer)
 
 Requires Node.js 22+ (the repo uses a Bun lockfile; npm also works).
 
