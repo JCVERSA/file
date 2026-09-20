@@ -183,27 +183,30 @@ if [ -n "$SOURCE_DIR" ]; then
 elif [ -d "$INSTALL_DIR/.git" ]; then
   CUR_REMOTE="$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || true)"
   case "$CUR_REMOTE" in
-    "$REPO_URL"|"$REPO_URL.git"|'')
-      ok "Repository already present - updating (git pull --ff-only)..."
-      git -C "$INSTALL_DIR" config pull.ff only
-      git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" \
-        || warn "Pull refused (local changes?) - continuing with the current code."
-      ;;
+    "$REPO_URL"|"$REPO_URL.git"|'') ;;
     *)
-      warn "Existing repository points at $CUR_REMOTE - re-linking to $REPO_URL ($BRANCH)..."
+      warn "Existing repository points at $CUR_REMOTE - re-linking to $REPO_URL ..."
       git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL.git" || fail "Could not change origin."
-      git -C "$INSTALL_DIR" fetch origin "$BRANCH" || fail "Fetch failed from $REPO_URL."
-      if [ -z "$(git -C "$INSTALL_DIR" status --porcelain 2>/dev/null)" ]; then
-        git -C "$INSTALL_DIR" checkout -B "$BRANCH" "origin/$BRANCH" >/dev/null 2>&1 \
-          || git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" >/dev/null 2>&1 \
-          || warn "Could not align on origin/$BRANCH - keeping current code."
-        ok "Installation migrated to $REPO_URL ($(git -C "$INSTALL_DIR" log -1 --format='%h'))."
-      else
-        warn "Local tree modified - no automatic reset."
-        warn "Resolve (git stash / fsd update) then rerun this script."
-      fi
       ;;
   esac
+
+  git -C "$INSTALL_DIR" config pull.ff only
+  ok "Repository already present - fetching branch ${BRANCH} ..."
+  git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" || fail "Fetch failed from $REPO_URL (branch $BRANCH)."
+
+  CUR_BRANCH="$(git -C "$INSTALL_DIR" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  if [ -n "$(git -C "$INSTALL_DIR" status --porcelain 2>/dev/null)" ]; then
+    warn "Local tree has uncommitted changes - keeping the current code (no forced update)."
+  elif [ "$CUR_BRANCH" = "$BRANCH" ]; then
+    ok "On branch ${BRANCH} - fast-forwarding ..."
+    git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" \
+      || warn "Pull refused - continuing with the current code."
+  else
+    warn "Switching from branch '${CUR_BRANCH:-detached}' to '${BRANCH}' ..."
+    git -C "$INSTALL_DIR" checkout -B "$BRANCH" FETCH_HEAD \
+      || fail "Could not switch to branch ${BRANCH}."
+    ok "Now on branch ${BRANCH} ($(git -C "$INSTALL_DIR" log -1 --format='%h'))."
+  fi
 else
   if [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
     fail "$INSTALL_DIR is not empty and is not a git repository."
@@ -212,6 +215,14 @@ else
     || fail "Clone failed (network?). Try: --source-dir /path/to/checkout"
   git -C "$INSTALL_DIR" config pull.ff only
   ok "Repository cloned ($(git -C "$INSTALL_DIR" log -1 --format='%h'))."
+fi
+
+# Validate the fetched tree BEFORE touching the launcher - catches installing
+# from a branch that predates scripts/ (e.g. an unmerged `main`), with a clear
+# error instead of a cryptic `chmod: cannot access scripts/fsd.sh`.
+if [ ! -f "$INSTALL_DIR/server.ts" ] || [ ! -f "$INSTALL_DIR/scripts/fsd.sh" ]; then
+  fail "Branch '${BRANCH}' does not contain the File Share code (scripts/fsd.sh missing).
+  Use --branch <branch-with-scripts>, e.g.:  --branch arena/01a0b7f8-file"
 fi
 
 # ---------------------------------------------------------------------------
