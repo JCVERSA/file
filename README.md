@@ -19,44 +19,70 @@ This repository contains two implementations:
 High-level request flow through the app, from first visit to a file operation:
 
 ```mermaid
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "primaryColor": "#7C3AED",
+    "primaryTextColor": "#FFFFFF",
+    "primaryBorderColor": "#4C1D95",
+    "lineColor": "#F97316",
+    "edgeLabelBackground": "#FFF7ED",
+    "clusterBkg": "#F5F3FF",
+    "clusterBorder": "#A78BFA",
+    "fontSize": "14px"
+  }
+}}%%
 flowchart TD
-    subgraph Browser["React client (src/App.tsx)"]
-        U["Visitor opens share URL"] --> V{"Valid session cookie?"}
-        V -- "No" --> L["LoginView: enter share password"]
+    subgraph Browser["🎨 React client (src/App.tsx)"]
+        U["👀 Visitor opens share URL"] --> V{"🔐 Valid session cookie?"}
+        V -- "No" --> L["🔑 LoginView: enter share password"]
         L --> Login["POST /api/login"]
         Login -- "rejected (rate limit / wrong password)" --> L
-        Login -- "OK" --> Cookie["HTTP-only SameSite=Lax session cookie"]
-        V -- "Yes" --> App["File list UI"]
+        Login -- "OK ✅" --> Cookie["🍪 HTTP-only SameSite=Lax session cookie"]
+        V -- "Yes" --> App["📁 File list UI"]
         Cookie --> App
-        App --> Act["User action"]
-        Act --> Up["Upload via dropzone"]
-        Act --> Dl["Preview / download / ZIP"]
-        Act --> Ed["Rename / move / delete / bulk ops"]
-        Act --> Ai["Smopi prompt (AI assistant)"]
+        App --> Act["⚡ User action"]
+        Act --> Up["⬆️ Upload via dropzone"]
+        Act --> Dl["👁️ Preview / download / ZIP"]
+        Act --> Ed["✏️ Rename / move / delete / bulk ops"]
+        Act --> Ai["🤖 Smopi prompt (AI assistant)"]
         Up --> Req["fetch /api/*"]
         Dl --> Req
         Ed --> Req
         Ai --> Req
     end
 
-    subgraph Server["Express server (server.ts)"]
-        Req --> Guard["Same-origin + auth middleware"]
-        Guard -- "unauthorized" --> Reject["401 / 403 response"]
-        Guard -- "OK" --> Path["Traversal-safe path resolution in SHARE_DIR"]
-        Path --> FS["Filesystem: read / write / delete / zip"]
+subgraph Server["🖥️ Express server (server.ts)"]
+        Req --> Guard["🛡️ Same-origin + auth middleware"]
+        Guard -- "unauthorized" --> Reject["🚫 401 / 403 response"]
+        Guard -- "OK" --> Path["🧭 Traversal-safe path resolution in SHARE_DIR"]
+        Path --> FS["💾 Filesystem: read / write / delete / zip"]
         Ai --> Engine{"GEMINI_API_KEY set?"}
-        Engine -- "Yes" --> Gemini["Gemini-backed Smopi agent"]
-        Engine -- "No" --> Local["Local fallback command engine"]
+        Engine -- "Yes" --> Gemini["✨ Gemini-backed Smopi agent"]
+        Engine -- "No" --> Local["⚙️ Local fallback command engine"]
         Gemini --> FS
         Local --> FS
-        FS --> Resp["JSON / file stream response"]
+        FS --> Resp["📤 JSON / file stream response"]
         Reject --> Resp
     end
 
-    Resp --> App
+Resp --> App
 
-    App -- "share expired / one-time download done / owner stop" --> Stopped["StoppedView"]
+App -- "share expired / one-time download done / owner stop" --> Stopped["🛑 StoppedView"]
+
+classDef clientNode fill:#7C3AED,stroke:#4C1D95,stroke-width:2px,color:#FFFFFF
+    classDef serverNode fill:#0EA5E9,stroke:#0369A1,stroke-width:2px,color:#FFFFFF
+    classDef decisionNode fill:#FDE68A,stroke:#D97706,stroke-width:2px,color:#78350F
+    classDef errorNode fill:#EF4444,stroke:#B91C1C,stroke-width:2px,color:#FFFFFF
+    classDef stoppedNode fill:#F87171,stroke:#991B1B,stroke-width:2px,color:#FFFFFF
+
+class U,L,Login,Cookie,App,Act,Up,Dl,Ed,Ai,Req clientNode
+    class Guard,Path,FS,Gemini,Local,Resp serverNode
+    class V,Engine decisionNode
+    class Reject errorNode
+    class Stopped stoppedNode
 ```
+
 
 ## Install (one-liner)
 
