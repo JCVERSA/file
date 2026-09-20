@@ -128,6 +128,23 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 ok "git $(git --version 2>/dev/null | awk '{print $3}')"
 
+# Best-effort user-space Node install (no root/apt) via a version manager
+# already on the machine: fnm or mise. Returns 0 when node >= 22 is usable.
+try_userland_node() {
+  if command -v fnm >/dev/null 2>&1; then
+    eval "$(fnm env)" 2>/dev/null || true
+    fnm install 22 >/dev/null 2>&1 || { warn "fnm install 22 failed."; return 1; }
+    eval "$(fnm env)" 2>/dev/null || true
+    return 0
+  fi
+  if command -v mise >/dev/null 2>&1; then
+    mise install node@22 >/dev/null 2>&1 || { warn "mise install node@22 failed."; return 1; }
+    eval "$(mise env)" 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 step "2/7 · Node.js (>= 22)"
 # ---------------------------------------------------------------------------
@@ -142,8 +159,22 @@ if [ "$NODE_MAJOR" -lt 22 ]; then
     curl -fsSL https://deb.nodesource.com/setup_22.x | sh - >/dev/null || fail "NodeSource setup failed."
     apt_install nodejs || fail "Could not install nodejs."
     NODE_MAJOR="$(node -v | tr -d 'v' | cut -d. -f1)"
+  elif try_userland_node; then
+    NODE_MAJOR="$(node -v | tr -d 'v' | cut -d. -f1)"
+    [ "$NODE_MAJOR" -ge 22 ] || fail "Version manager installed node $(node -v) - still < 22."
+    ok "Node $(node -v) provisioned via $(command -v fnm >/dev/null 2>&1 && echo fnm || echo mise)."
   else
-    fail "Node.js >= 22 required (root+apt unavailable for auto-install). Install it from https://nodejs.org and rerun."
+    fail "Node.js >= 22 required, but only '${NODE_MAJOR:-none}' was found and no root/apt
+or version manager is available.
+
+No root needed - install Node 22 with nvm, then re-run this installer:
+
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+  export NVM_DIR=\"\$HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
+  nvm install 22 && nvm alias default 22
+
+Open a new shell (or: source ~/.bashrc), make sure 'node -v' prints v22.x,
+then run the install command again."
   fi
 fi
 [ "$NODE_MAJOR" -ge 22 ] || fail "Node.js ${NODE_MAJOR} detected - >= 22 is required."
