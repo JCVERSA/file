@@ -163,12 +163,22 @@ if [ -n "$SOURCE_DIR" ]; then
     { [ -f "$INSTALL_DIR/server.ts" ] && [ -f "$INSTALL_DIR/package.json" ]; } \
       || [ -d "$INSTALL_DIR/.fsd" ] \
       || fail "$INSTALL_DIR exists and does not look like a File Share install - refusing to overwrite. Remove it or choose another --dir."
+    # Preserve user data across a source-dir reinstall.
+    PRESERVE_DIR="$(mktemp -d)"
+    [ -f "$INSTALL_DIR/.env" ]         && mv "$INSTALL_DIR/.env" "$PRESERVE_DIR/.env"
+    [ -d "$INSTALL_DIR/shared_files" ] && mv "$INSTALL_DIR/shared_files" "$PRESERVE_DIR/shared_files"
     rm -rf "$INSTALL_DIR"
   fi
   mkdir -p "$INSTALL_DIR"
   ( cd "$SOURCE_DIR" && tar -cf - . ) | ( cd "$INSTALL_DIR" && tar -xf - )
   rm -rf "$INSTALL_DIR/.git" "$INSTALL_DIR/node_modules" "$INSTALL_DIR/dist" \
          "$INSTALL_DIR/shared_files" "$INSTALL_DIR/.fsd"
+  # Restore preserved user data on top of the fresh staging.
+  if [ -n "${PRESERVE_DIR:-}" ]; then
+    [ -f "$PRESERVE_DIR/.env" ]         && mv "$PRESERVE_DIR/.env" "$INSTALL_DIR/.env"
+    [ -d "$PRESERVE_DIR/shared_files" ] && mv "$PRESERVE_DIR/shared_files" "$INSTALL_DIR/shared_files"
+    rm -rf "$PRESERVE_DIR"
+  fi
   ok "Installed from local source ($SOURCE_DIR) - git updates disabled."
 elif [ -d "$INSTALL_DIR/.git" ]; then
   CUR_REMOTE="$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || true)"

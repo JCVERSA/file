@@ -194,10 +194,11 @@ cmd_version() {
 
 cmd_update() {
   [ -d "$APP_DIR/.git" ] || die "Installed from --source-dir; re-run install.sh to update."
+  BRANCH="$(git -C "$APP_DIR" symbolic-ref --short -q HEAD 2>/dev/null || echo main)"
   if is_running; then was_running=1; else was_running=0; fi
-  info "Pulling latest ($REPO_URL main) ..."
+  info "Pulling latest ($REPO_URL $BRANCH) ..."
   git -C "$APP_DIR" config pull.ff only
-  git -C "$APP_DIR" pull --ff-only origin main || die "Pull failed - resolve local changes first."
+  git -C "$APP_DIR" pull --ff-only origin "$BRANCH" || die "Pull failed - resolve local changes first."
   if [ "$was_running" -eq 1 ]; then cmd_stop; fi
   cmd_setup
   if [ "$was_running" -eq 1 ]; then cmd_start; fi
