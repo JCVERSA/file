@@ -22,66 +22,68 @@ High-level request flow through the app, from first visit to a file operation:
 %%{init: {
   "theme": "base",
   "themeVariables": {
-    "primaryColor": "#7C3AED",
-    "primaryTextColor": "#FFFFFF",
-    "primaryBorderColor": "#4C1D95",
+    "fontFamily": "ui-sans-serif, system-ui, sans-serif",
+    "fontSize": "14px",
     "lineColor": "#F97316",
     "edgeLabelBackground": "#FFF7ED",
-    "clusterBkg": "#F5F3FF",
-    "clusterBorder": "#A78BFA",
-    "fontSize": "14px"
+    "clusterBkg": "#FAFAFF",
+    "clusterBorder": "#A78BFA"
   }
 }}%%
 flowchart TD
-    subgraph Browser["🎨 React client (src/App.tsx)"]
-        U["👀 Visitor opens share URL"] --> V{"🔐 Valid session cookie?"}
-        V -- "No" --> L["🔑 LoginView: enter share password"]
-        L --> Login["POST /api/login"]
-        Login -- "rejected (rate limit / wrong password)" --> L
-        Login -- "OK ✅" --> Cookie["🍪 HTTP-only SameSite=Lax session cookie"]
-        V -- "Yes" --> App["📁 File list UI"]
-        Cookie --> App
-        App --> Act["⚡ User action"]
-        Act --> Up["⬆️ Upload via dropzone"]
-        Act --> Dl["👁️ Preview / download / ZIP"]
-        Act --> Ed["✏️ Rename / move / delete / bulk ops"]
-        Act --> Ai["🤖 Smopi prompt (AI assistant)"]
-        Up --> Req["fetch /api/*"]
-        Dl --> Req
-        Ed --> Req
-        Ai --> Req
+    subgraph CLIENT["🎨 React client — src/App.tsx"]
+        direction TB
+        U(["👀 Visitor opens share URL"]) --> V{"🔐 Valid session cookie?"}
+        V -- "No" --> L(["🔑 LoginView — enter share password"])
+        L --> LOGIN(["📡 POST /api/login"])
+        LOGIN -- "wrong password / rate-limited" --> L
+        LOGIN -- "✅ OK" --> COOKIE(["🍪 HTTP-only SameSite=Lax session cookie"])
+        V -- "Yes" --> UI(["📁 File list UI"])
+        COOKIE --> UI
+        UI --> ACT(["⚡ User action"])
+        ACT --> UP(["⬆️ Upload via dropzone"])
+        ACT --> DL(["👁️ Preview / download / ZIP"])
+        ACT --> ED(["✏️ Rename / move / delete / bulk ops"])
+        ACT --> AI(["🤖 Smopi prompt (AI assistant)"])
     end
 
-subgraph Server["🖥️ Express server (server.ts)"]
-        Req --> Guard["🛡️ Same-origin + auth middleware"]
-        Guard -- "unauthorized" --> Reject["🚫 401 / 403 response"]
-        Guard -- "OK" --> Path["🧭 Traversal-safe path resolution in SHARE_DIR"]
-        Path --> FS["💾 Filesystem: read / write / delete / zip"]
-        Ai --> Engine{"GEMINI_API_KEY set?"}
-        Engine -- "Yes" --> Gemini["✨ Gemini-backed Smopi agent"]
-        Engine -- "No" --> Local["⚙️ Local fallback command engine"]
-        Gemini --> FS
-        Local --> FS
-        FS --> Resp["📤 JSON / file stream response"]
-        Reject --> Resp
+subgraph SERVER["🖥️ Express server — server.ts"]
+        direction TB
+        GUARD(["🛡️ Same-origin + auth middleware"])
+        GUARD -- "🚫 unauthorized" --> REJECT(["401 / 403"])
+        GUARD -- "✅ OK" --> PATH(["🧭 traversal-safe path resolution in SHARE_DIR"])
+        PATH --> FS(["💾 filesystem — read / write / delete / zip"])
+        AI --> ENG{"GEMINI_API_KEY set?"}
+        ENG -- "Yes" --> GEM(["✨ Gemini-backed Smopi agent"])
+        ENG -- "No" --> LOC(["⚙️ local fallback command engine"])
+        GEM --> FS
+        LOC --> FS
+        FS --> RESP(["📤 JSON / file stream response"])
+        REJECT --> RESP
     end
 
-Resp --> App
+UP --> GUARD
+    DL --> GUARD
+    ED --> GUARD
+    AI --> GUARD
+    RESP --> UI
+    UI -- "share expired / one-time download done / owner stop" --> STOP(["🛑 StoppedView"])
 
-App -- "share expired / one-time download done / owner stop" --> Stopped["🛑 StoppedView"]
+classDef client fill:#7C3AED,stroke:#4C1D95,stroke-width:2px,color:#FFFFFF
+    classDef server fill:#0EA5E9,stroke:#0369A1,stroke-width:2px,color:#FFFFFF
+    classDef decision fill:#FDE68A,stroke:#D97706,stroke-width:2px,color:#78350F
+    classDef error fill:#EF4444,stroke:#B91C1C,stroke-width:2px,color:#FFFFFF
+    classDef ai fill:#EC4899,stroke:#9D174D,stroke-width:2px,color:#FFFFFF
+    classDef store fill:#10B981,stroke:#065F46,stroke-width:2px,color:#FFFFFF
 
-classDef clientNode fill:#7C3AED,stroke:#4C1D95,stroke-width:2px,color:#FFFFFF
-    classDef serverNode fill:#0EA5E9,stroke:#0369A1,stroke-width:2px,color:#FFFFFF
-    classDef decisionNode fill:#FDE68A,stroke:#D97706,stroke-width:2px,color:#78350F
-    classDef errorNode fill:#EF4444,stroke:#B91C1C,stroke-width:2px,color:#FFFFFF
-    classDef stoppedNode fill:#F87171,stroke:#991B1B,stroke-width:2px,color:#FFFFFF
-
-class U,L,Login,Cookie,App,Act,Up,Dl,Ed,Ai,Req clientNode
-    class Guard,Path,FS,Gemini,Local,Resp serverNode
-    class V,Engine decisionNode
-    class Reject errorNode
-    class Stopped stoppedNode
+class U,L,LOGIN,COOKIE,UI,ACT,UP,DL,ED client
+    class V,ENG decision
+    class GUARD,PATH,RESP server
+    class AI,GEM,LOC ai
+    class FS store
+    class REJECT,STOP error
 ```
+
 
 
 ## Install (one-liner)
