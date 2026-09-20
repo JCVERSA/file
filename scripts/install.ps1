@@ -4,8 +4,9 @@
 #   irm https://raw.githubusercontent.com/JCVERSA/file/main/scripts/install.ps1 | iex
 #
 # Or download and run directly:
-#   powershell -ExecutionPolicy Bypass -File install.ps1 [-Update] [-DryRun] [-Force]
+#   powershell -ExecutionPolicy Bypass -File install.ps1 [-Branch NAME] [-Update] [-DryRun] [-Force]
 param(
+    [string]$Branch = 'main',
     [switch]$Update,
     [switch]$DryRun,
     [switch]$Force,
@@ -17,7 +18,6 @@ $ErrorActionPreference   = 'Stop'
 $ProgressPreference      = 'SilentlyContinue'
 
 $Repo       = 'JCVERSA/file'
-$Branch     = 'main'
 $ArchiveUrl = "https://github.com/$Repo/archive/refs/heads/$Branch.zip"
 $RawBase    = "https://raw.githubusercontent.com/$Repo/$Branch"
 $DataDir    = Join-Path $env:LOCALAPPDATA 'FileShare'
@@ -41,10 +41,11 @@ Install or update:
   irm https://raw.githubusercontent.com/$Repo/$Branch/scripts/install.ps1 | iex
 
 Options when run directly:
-  -Update    Update mode (re-running the installer is equivalent)
-  -DryRun    Download and validate without installing
-  -Force     Reinstall even when the same version is installed
-  -Help      Show this help
+  -Branch NAME install a specific branch (default main)
+  -Update     Update mode (re-running the installer is equivalent)
+  -DryRun     Download and validate without installing
+  -Force      Reinstall even when the same version is installed
+  -Help       Show this help
 "@
     return
 }
@@ -348,7 +349,7 @@ if (Test-Path `$errLog) { Write-Host '-- stderr --'; Get-Content `$errLog -Tail 
     @"
 Set-StrictMode -Version Latest
 `$ErrorActionPreference = 'Stop'
-& ([scriptblock]::Create((Invoke-RestMethod '$RawBase/scripts/install.ps1'))) -Update
+& ([scriptblock]::Create((Invoke-RestMethod '$RawBase/scripts/install.ps1'))) -Update -Branch $Branch
 "@ | Set-Content -LiteralPath (Join-Path $InstallDir 'update.ps1') -Encoding UTF8
 
     @"
