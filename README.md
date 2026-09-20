@@ -14,6 +14,50 @@ This repository contains two implementations:
 > Its `server.py` and `templates/` are read-only reference material and are not
 > executed by any npm script.
 
+## Flow
+
+High-level request flow through the app, from first visit to a file operation:
+
+```mermaid
+flowchart TD
+    subgraph Browser["React client (src/App.tsx)"]
+        U["Visitor opens share URL"] --> V{"Valid session cookie?"}
+        V -- "No" --> L["LoginView: enter share password"]
+        L --> Login["POST /api/login"]
+        Login -- "rejected (rate limit / wrong password)" --> L
+        Login -- "OK" --> Cookie["HTTP-only SameSite=Lax session cookie"]
+        V -- "Yes" --> App["File list UI"]
+        Cookie --> App
+        App --> Act["User action"]
+        Act --> Up["Upload via dropzone"]
+        Act --> Dl["Preview / download / ZIP"]
+        Act --> Ed["Rename / move / delete / bulk ops"]
+        Act --> Ai["Smopi prompt (AI assistant)"]
+        Up --> Req["fetch /api/*"]
+        Dl --> Req
+        Ed --> Req
+        Ai --> Req
+    end
+
+    subgraph Server["Express server (server.ts)"]
+        Req --> Guard["Same-origin + auth middleware"]
+        Guard -- "unauthorized" --> Reject["401 / 403 response"]
+        Guard -- "OK" --> Path["Traversal-safe path resolution in SHARE_DIR"]
+        Path --> FS["Filesystem: read / write / delete / zip"]
+        Ai --> Engine{"GEMINI_API_KEY set?"}
+        Engine -- "Yes" --> Gemini["Gemini-backed Smopi agent"]
+        Engine -- "No" --> Local["Local fallback command engine"]
+        Gemini --> FS
+        Local --> FS
+        FS --> Resp["JSON / file stream response"]
+        Reject --> Resp
+    end
+
+    Resp --> App
+
+    App -- "share expired / one-time download done / owner stop" --> Stopped["StoppedView"]
+```
+
 ## Install (one-liner)
 
 The recommended way to run the share on a server. Installs Node.js 22+ if
