@@ -377,30 +377,62 @@ function sameOriginGuard(req: express.Request, res: express.Response, next: expr
     return;
   }
 
-  const headerNames = ['sec-fetch-site', 'origin'];
-  for (const name of headerNames) {
-    const value = req.headers[name];
-    if (typeof value !== 'string' || !value) continue;
-    if (name === 'sec-fetch-site' && value === 'same-origin') continue;
-    if (name === 'sec-fetch-site' && value === 'same-site') continue;
+  const secFetchSite = req.headers['sec-fetch-site'];
+  if (typeof secFetchSite === 'string' && (secFetchSite === 'same-origin' || secFetchSite === 'same-site')) {
+    next();
+    return;
+  }
 
-    const hostHeader = req.headers.host;
-    const proto = (req.headers['x-forwarded-proto'] as string | undefined) || (req.secure ? 'https' : 'http');
-    const origin = value;
-    if (origin === `${proto}://${hostHeader}`) continue;
+  // Requests that authenticate explicitly (Bearer / query token, e.g. the
+  // embedded preview) do not rely on the ambient cookie, so cross-site origin
+  // is acceptable.
+  const hasExplicitAuth = Boolean(
+    (typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bearer ')) ||
+    (typeof req.query?.token === 'string' && req.query.token.length > 0)
+  );
+  if (hasExplicitAuth) {
+    next();
+    return;
+  }
 
-    // Allow cross-site requests that do not rely on the ambient cookie
-    // (explicit Bearer / query token auth, as used by the embedded preview).
-    const hasExplicitAuth = Boolean(
-      (req.headers.authorization?.startsWith?.('Bearer ')) ||
-      (typeof req.query?.token === 'string' && req.query.token.length > 0)
-    );
-    if (hasExplicitAuth) continue;
+  // Hostnames this request may legitimately be addressed at (proxies can keep
+  // the public host in Host or forward it via X-Forwarded-Host).
+  const allowedHostnames = new Set<string>();
+  for (const header of [req.headers.host, req.headers['x-forwarded-host']]) {
+    if (typeof header !== 'string' || !header) continue;
+    for (const part of header.split(',')) {
+      const hostname = part.trim().split(':')[0].toLowerCase();
+      if (hostname) allowedHostnames.add(hostname);
+    }
+  }
 
-    console.warn(`Rejected cross-site ${method} request (${name}: ${origin})`);
+  // Compare the Origin's hostname only: behind the TLS-terminating preview
+  // proxy the request arrives over http while the browser Origin is https,
+  // so a scheme-sensitive comparison would false-positive.
+  const origin = req.headers.origin;
+  if (typeof origin === 'string' && origin) {
+    let originHostname: string | null = null;
+    try {
+      originHostname = new URL(origin).hostname.toLowerCase();
+    } catch {
+      originHostname = null;
+    }
+    if (originHostname && !allowedHostnames.has(originHostname)) {
+      console.warn(`Rejected cross-site ${method} request (origin host: ${originHostname})`);
+      res.status(403).json({ error: 'Cross-site request rejected' });
+      return;
+    }
+    next();
+    return;
+  }
+
+  // No Origin, but the browser explicitly declared a cross-site fetch.
+  if (typeof secFetchSite === 'string' && secFetchSite === 'cross-site') {
+    console.warn(`Rejected cross-site ${method} request (sec-fetch-site: cross-site)`);
     res.status(403).json({ error: 'Cross-site request rejected' });
     return;
   }
+
   next();
 }
 app.use(sameOriginGuard);
