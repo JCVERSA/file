@@ -24,6 +24,11 @@ export const StoppedView: React.FC<StoppedViewProps> = ({ status, onRestart }) =
         >
           Restart File Share
         </button>
+        {status && status.is_owner === false && (
+          <p className="muted" style={{ marginTop: '12px' }}>
+            Only the share owner can restart the share.
+          </p>
+        )}
       </section>
     </div>
   );

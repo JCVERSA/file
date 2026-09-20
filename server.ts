@@ -5,31 +5,50 @@ import crypto from 'crypto';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 dotenv.config();
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const archiver = require('archiver');
+import { ZipArchive } from 'archiver';
 import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { runSmopiAgent, executeSmopiTool, sanitizeFileName, resolveSafePath } from './server/smopi';
 
 const app = express();
 app.set('trust proxy', 1);
-const PORT = 3000;
-const SHARE_DIR = path.resolve(process.cwd(), 'shared_files');
+const PORT = Math.max(1, Math.min(65535, parseInt(process.env.PORT || '') || 3000));
+// SHARE_DIR override allows deployments and automated tests to relocate the
+// backing directory; the default is ./shared_files relative to the process cwd.
+const SHARE_DIR = process.env.SHARE_DIR
+  ? path.resolve(process.env.SHARE_DIR)
+  : path.resolve(process.cwd(), 'shared_files');
 
 // Ensure the shared directory exists
 if (!fs.existsSync(SHARE_DIR)) {
   fs.mkdirSync(SHARE_DIR, { recursive: true });
 }
 
+// Recover UTF-8 filenames from multipart uploads: browsers send the filename
+// as raw UTF-8 bytes, which busboy/multer surface as a latin1 string
+// (e.g. "caf\u00c3\u00a9" instead of "caf\u00e9"). Round-tripping latin1 -> bytes
+// -> utf8 restores the correct name; fall back to the raw name if the result
+// contains U+FFFD (i.e. the original bytes were not valid UTF-8).
+function decodeMultipartName(name: string): string {
+  try {
+    const repaired = Buffer.from(name, 'latin1').toString('utf8');
+    if (repaired.includes('\uFFFD') && !name.includes('\uFFFD')) {
+      return name;
+    }
+    return repaired;
+  } catch {
+    return name;
+  }
+}
+
 // Multer storage configuration for saving uploaded files with security hardening
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: (_req, _file, cb) => {
     cb(null, SHARE_DIR);
   },
-  filename: (req, file, cb) => {
+  filename: (_req, file, cb) => {
     // Strip directory structures to avoid traversal
-    let sanitized = path.basename(file.originalname).trim();
+    let sanitized = path.basename(decodeMultipartName(file.originalname)).trim();
     // Forbid hidden files starting with .
     if (sanitized.startsWith('.')) {
       sanitized = sanitized.replace(/^\.+/, '') || 'upload.bin';
@@ -51,8 +70,9 @@ const storage = multer.diskStorage({
       counter++;
     }
 
+    // Ensure uniqueness even under concurrent uploads (name check is not atomic).
     if (fs.existsSync(path.join(SHARE_DIR, candidate))) {
-      candidate = `${base}_${Date.now()}${ext}`;
+      candidate = `${base}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}${ext}`;
     }
 
     cb(null, candidate);
@@ -79,6 +99,9 @@ const state = {
   activeDownloads: 0,
   oneTime: false,
   expiresInSec: 30 * 60, // default 30 minutes
+  ownerToken: '',
+  ownerSessions: new Map<string, number>(),
+  smopiTimestamps: {} as Record<string, number[]>,
 };
 
 interface SessionRecord {
@@ -98,6 +121,10 @@ function pruneExpiredSessions() {
 }
 
 const loginAttempts: Record<string, number[]> = {};
+const OWNER_RATE_LIMIT = 3; // generous: the owner only logs in once per deploy
+const OWNER_RATE_WINDOW_SEC = 60;
+const SMOPI_WINDOW_MS = 60 * 1000;
+const SMOPI_MAX_REQUESTS_PER_WINDOW = 20;
 
 // Safe human-readable byte sizes
 function humanSize(size: number): string {
@@ -125,6 +152,7 @@ function getMimeType(name: string): string {
     '.jpeg': 'image/jpeg',
     '.gif': 'image/gif',
     '.svg': 'image/svg+xml',
+    '.avif': 'image/avif',
     '.ico': 'image/x-icon',
     '.webp': 'image/webp',
     '.pdf': 'application/pdf',
@@ -166,6 +194,20 @@ function fileType(name: string): string {
   }
   const ext = path.extname(name).toLowerCase().slice(1);
   return ext ? ext.toUpperCase() : "FILE";
+}
+
+// Extensions that are safe to render inline in the browser (non-executable image formats).
+function isInlineImageExt(name: string): boolean {
+  const ext = path.extname(name).toLowerCase();
+  return ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.bmp', '.ico'].includes(ext);
+}
+
+// Build a Content-Disposition header with an ASCII fallback filename plus an
+// RFC 5987 filename* parameter for non-ASCII names (mirrors the Python origin).
+function contentDisposition(filename: string): string {
+  const clean = filename.replace(/[\r\n]/g, '');
+  const asciiFallback = clean.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '') || 'download';
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(clean)}`;
 }
 
 // Scan directory for regular files (ignores folders, links, dots, path traversal)
@@ -268,12 +310,11 @@ function initializeState() {
 
   // Primary: Check SHARE_PASSWORD or PASSWORD environment variable
   const envPassword = (process.env.SHARE_PASSWORD || process.env.PASSWORD || '').trim();
-  let sharePassword = envPassword;
+  // Preserve a previously generated password across restarts so the share link
+  // stays valid (do not silently re-randomize and lock the operator out).
+  const keptExistingPassword = !envPassword && Boolean(state.password);
+  let sharePassword = envPassword || state.password || crypto.randomBytes(6).toString('hex');
   const isFromEnv = Boolean(envPassword);
-
-  if (!sharePassword) {
-    sharePassword = crypto.randomBytes(6).toString('hex');
-  }
 
   const expiresSec = process.env.SHARE_EXPIRY ? parseInt(process.env.SHARE_EXPIRY) : 30 * 60; // 30 minutes default
   const oneTime = process.env.SHARE_ONE_TIME === 'true' || false;
@@ -287,12 +328,16 @@ function initializeState() {
   state.activeDownloads = 0;
   state.oneTime = oneTime;
   state.expiresInSec = expiresSec;
+  state.ownerToken = (process.env.OWNER_TOKEN || '').trim() || state.ownerToken || crypto.randomBytes(24).toString('hex');
+  state.ownerSessions.clear();
+  state.smopiTimestamps = {};
 
   console.log("\n" + "=".repeat(72));
   console.log(`  TEMPORARY FILE SHARE SERVER (Node/Express)`);
   console.log("=".repeat(72));
   console.log(`  Directory : ${SHARE_DIR}`);
-  console.log(`  Password  : ${sharePassword} (${isFromEnv ? 'from SHARE_PASSWORD env' : 'generated'})`);
+  console.log(`  Password  : ${sharePassword} (${isFromEnv ? 'from SHARE_PASSWORD env' : keptExistingPassword ? 'kept from previous session' : 'generated'})`);
+  console.log(`  Owner acc.: token at /api/login-owner`);
   console.log(`  Lifetime  : ${expiresSec > 0 ? expiresSec + 's' : 'disabled'}`);
   console.log(`  One-time  : ${oneTime ? 'YES' : 'NO'}`);
   console.log("=".repeat(72) + "\n");
@@ -315,26 +360,136 @@ function remainingSeconds(): number | null {
 }
 
 // Apply middlewares
-app.use((req, res, next) => {
+app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
 });
+
+// Same-origin guard for mutating methods: reject cross-site requests when the
+// browser supplies an Origin or Sec-Fetch-Site header that does not match the
+// request's host. This blocks CSRF regardless of future cookie attribute changes.
+function sameOriginGuard(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  const method = (req.method || 'GET').toUpperCase();
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+    next();
+    return;
+  }
+
+  const secFetchSite = req.headers['sec-fetch-site'];
+  if (typeof secFetchSite === 'string' && (secFetchSite === 'same-origin' || secFetchSite === 'same-site')) {
+    next();
+    return;
+  }
+
+  // Requests that authenticate explicitly (Bearer / query token, e.g. the
+  // embedded preview) do not rely on the ambient cookie, so cross-site origin
+  // is acceptable.
+  const hasExplicitAuth = Boolean(
+    (typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bearer ')) ||
+    (typeof req.query?.token === 'string' && req.query.token.length > 0)
+  );
+  if (hasExplicitAuth) {
+    next();
+    return;
+  }
+
+  // Hostnames this request may legitimately be addressed at (proxies can keep
+  // the public host in Host or forward it via X-Forwarded-Host).
+  const allowedHostnames = new Set<string>();
+  for (const header of [req.headers.host, req.headers['x-forwarded-host']]) {
+    if (typeof header !== 'string' || !header) continue;
+    for (const part of header.split(',')) {
+      const hostname = part.trim().split(':')[0].toLowerCase();
+      if (hostname) allowedHostnames.add(hostname);
+    }
+  }
+
+  // Compare the Origin's hostname only: behind the TLS-terminating preview
+  // proxy the request arrives over http while the browser Origin is https,
+  // so a scheme-sensitive comparison would false-positive.
+  const origin = req.headers.origin;
+  if (typeof origin === 'string' && origin) {
+    let originHostname: string | null = null;
+    try {
+      originHostname = new URL(origin).hostname.toLowerCase();
+    } catch {
+      originHostname = null;
+    }
+    if (originHostname && !allowedHostnames.has(originHostname)) {
+      console.warn(`Rejected cross-site ${method} request (origin host: ${originHostname})`);
+      res.status(403).json({ error: 'Cross-site request rejected' });
+      return;
+    }
+    next();
+    return;
+  }
+
+  // No Origin, but the browser explicitly declared a cross-site fetch.
+  if (typeof secFetchSite === 'string' && secFetchSite === 'cross-site') {
+    console.warn(`Rejected cross-site ${method} request (sec-fetch-site: cross-site)`);
+    res.status(403).json({ error: 'Cross-site request rejected' });
+    return;
+  }
+
+  next();
+}
+app.use(sameOriginGuard);
+
+// Minimal access logger that never records session tokens (avoids leaking
+// bearer/query credentials into stdout/log aggregation).
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    console.log(`${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - start}ms)`);
+  });
+  next();
+});
+
 app.use(express.json());
 app.use(cookieParser());
 
 // Initialize share configurations
 initializeState();
 
-// Check if cookies, Authorization header, or query token has a valid, non-expired session
+// Resolve the session token(s) presented on a request (cookie, bearer, or query).
+function presentedTokens(req: express.Request): string[] {
+  const tokens: string[] = [];
+  const cookieToken = req.cookies?.fs_session;
+  if (typeof cookieToken === 'string' && cookieToken) tokens.push(cookieToken);
+  const authHeader = req.headers.authorization;
+  if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    const bearerToken = authHeader.substring(7).trim();
+    if (bearerToken) tokens.push(bearerToken);
+  }
+  const queryToken = req.query?.token;
+  if (typeof queryToken === 'string' && queryToken) tokens.push(queryToken);
+  return tokens;
+}
+
+// Whether the request presents a valid, non-expired owner session token.
+function ownerSessionValid(req: express.Request): boolean {
+  const now = Date.now();
+  return presentedTokens(req).some((token) => {
+    const expiresAt = state.ownerSessions.get(token);
+    if (expiresAt === undefined) return false;
+    if (now >= expiresAt) {
+      state.ownerSessions.delete(token);
+      return false;
+    }
+    return true;
+  });
+}
+
+// Check if cookies, Authorization header, or query token has a valid, non-expired
+// session. An owner session is a superset of an authenticated session.
 function isSessionValid(req: express.Request): boolean {
+  if (ownerSessionValid(req)) return true;
   pruneExpiredSessions();
   const now = Date.now();
 
-  const checkToken = (token?: string | null): boolean => {
-    if (!token || typeof token !== 'string') return false;
+  return presentedTokens(req).some((token) => {
     const session = sessions.get(token);
     if (!session) return false;
     if (now >= session.expiresAt) {
@@ -342,38 +497,66 @@ function isSessionValid(req: express.Request): boolean {
       return false;
     }
     return true;
-  };
-
-  // 1. Check HTTP-only cookie
-  if (checkToken(req.cookies?.fs_session)) {
-    return true;
-  }
-
-  // 2. Check Authorization: Bearer <token>
-  const authHeader = req.headers.authorization;
-  if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    const bearerToken = authHeader.substring(7).trim();
-    if (checkToken(bearerToken)) {
-      return true;
-    }
-  }
-
-  // 3. Check query token (for direct browser downloads / previews in embedded iframe contexts)
-  const queryToken = req.query?.token;
-  if (typeof queryToken === 'string' && checkToken(queryToken)) {
-    return true;
-  }
-
-  return false;
+  });
 }
+
+// Whether the current request is authenticated as the share owner (host).
+//
+// When OWNER_SESSION_SECRET is unset, the server runs in single-admin mode:
+// anyone holding the share password is the owner (identical to the original
+// behavior). When set, owner rights are limited to sessions established via
+// POST /api/login-owner.
+function isOwner(req: express.Request): boolean {
+  if (!(process.env.OWNER_SESSION_SECRET || '').trim()) {
+    return isSessionValid(req);
+  }
+  return ownerSessionValid(req);
+}
+
+// Owner login (optional credential gate; disabled when OWNER_SESSION_SECRET is unset).
+app.post('/api/login-owner', (req, res) => {
+  const ip = req.ip || 'unknown';
+  const secretEnv = (process.env.OWNER_SESSION_SECRET || '').trim();
+  if (!secretEnv) {
+    return res.status(404).json({ error: 'Owner login is disabled' });
+  }
+
+  // Owner gate: 3 attempts per minute per IP, tracked separately from the
+  // general login limiter.
+  const now = Date.now();
+  const windowStart = now - OWNER_RATE_WINDOW_SEC * 1000;
+  if (Array.isArray(loginAttempts[`owner:${ip}`]) && loginAttempts[`owner:${ip}`].filter((t) => t > windowStart).length >= OWNER_RATE_LIMIT) {
+    return res.status(429).json({ error: 'Too many owner login attempts. Please wait a minute.' });
+  }
+
+  const untyped = req.body;
+  const provided = (untyped && (typeof untyped.secret === 'string' ? untyped.secret : (typeof untyped.password === 'string' ? untyped.password : ''))) || '';
+  const providedBuf = Buffer.from(provided);
+  const secretBuf = Buffer.from(secretEnv);
+  const isMatch = providedBuf.length === secretBuf.length && crypto.timingSafeEqual(providedBuf, secretBuf);
+
+  if (!isMatch) {
+    if (!loginAttempts[`owner:${ip}`]) loginAttempts[`owner:${ip}`] = [];
+    loginAttempts[`owner:${ip}`].push(now);
+    return res.status(401).json({ error: 'Owner credential was not accepted.' });
+  }
+
+  // Success: clear owner attempts only (not the general login limiter).
+  delete loginAttempts[`owner:${ip}`];
+
+  const token = crypto.randomBytes(32).toString('hex');
+  state.ownerSessions.set(token, now + 12 * 60 * 60 * 1000); // 12h owner session
+  res.json({ success: true, ownerToken: token });
+});
 
 // API: Get current metrics & lifetime status
 app.get('/api/status', (req, res) => {
   // Update expired states lazily
   isExpired();
 
-  // Determine if authorized
+  // Determine if authorized (and whether the caller is the share owner)
   const authorized = isSessionValid(req);
+  const owner = authorized && isOwner(req);
 
   res.json({
     active_downloads: state.activeDownloads,
@@ -385,8 +568,9 @@ app.get('/api/status', (req, res) => {
     stopped: state.stopped,
     stop_reason: state.stopReason,
     authorized,
-    // Disclose the share password strictly to authenticated sessions so the host can copy/distribute it
-    share_password: authorized ? state.password : undefined
+    is_owner: owner,
+    // Disclose the share password only to the share owner (host).
+    share_password: owner ? state.password : undefined
   });
 });
 
@@ -444,7 +628,8 @@ app.get('/api/preview/:filename', async (req, res) => {
     if (mime.startsWith('image/')) {
       const activeToken = req.cookies?.fs_session || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.substring(7).trim() : '');
       const tokenParam = activeToken ? `?token=${encodeURIComponent(activeToken)}` : '';
-      return res.json({ type: 'image', url: `/download/${encodeURIComponent(filename)}${tokenParam}` });
+      const isInline = mime === 'image/svg+xml';
+      return res.json({ type: 'image', url: `/download/${encodeURIComponent(filename)}${tokenParam}`, svg: isInline });
     }
 
     const ext = path.extname(filename).toLowerCase();
@@ -474,7 +659,7 @@ app.post('/api/login', (req, res) => {
     return res.status(429).json({ error: `Too many attempts. Please wait ${waitSec} seconds.` });
   }
 
-  const { password } = req.body;
+  const { password } = req.body || {};
   const userPassBuf = Buffer.from(typeof password === 'string' ? password : '');
   const actualPassBuf = Buffer.from(state.password);
 
@@ -484,9 +669,12 @@ app.post('/api/login', (req, res) => {
   if (isPasswordMatch) {
     const token = crypto.randomBytes(24).toString('hex');
     const now = Date.now();
+    // Cap session lifetime so it does not outlive the share itself.
+    const remainingMs = state.expiresAt ? Math.max(60_000, state.expiresAt - now) : SESSION_TTL_MS;
+    const ttlMs = Math.min(SESSION_TTL_MS, remainingMs);
     sessions.set(token, {
       createdAt: now,
-      expiresAt: now + SESSION_TTL_MS
+      expiresAt: now + ttlMs
     });
 
     // Set cookie with SameSite: 'lax' for broader compatibility
@@ -590,7 +778,7 @@ app.delete('/api/files/:name', async (req, res) => {
 });
 
 // API: Smopi AI status
-app.get('/api/smopi/status', (req, res) => {
+app.get('/api/smopi/status', (_req, res) => {
   const hasKey = Boolean((process.env.GEMINI_API_KEY || '').trim());
   res.json({
     hasApiKey: hasKey,
@@ -607,6 +795,27 @@ app.get('/api/smopi/status', (req, res) => {
   });
 });
 
+// Per-IP rate limiter for the Smopi agent (protects the Gemini API budget).
+function allowSmopi(ip: string): boolean {
+  const now = Date.now();
+  for (const [key, timestamps] of Object.entries(state.smopiTimestamps)) {
+    const valid = timestamps.filter((t) => now - t < SMOPI_WINDOW_MS);
+    if (valid.length === 0) {
+      delete state.smopiTimestamps[key];
+    } else {
+      state.smopiTimestamps[key] = valid;
+    }
+  }
+  if (!state.smopiTimestamps[ip]) {
+    state.smopiTimestamps[ip] = [];
+  }
+  if (state.smopiTimestamps[ip].length >= SMOPI_MAX_REQUESTS_PER_WINDOW) {
+    return false;
+  }
+  state.smopiTimestamps[ip].push(now);
+  return true;
+}
+
 // API: Smopi AI Chat / Action Loop
 app.post('/api/smopi/chat', async (req, res) => {
   if (!isSessionValid(req)) {
@@ -614,6 +823,10 @@ app.post('/api/smopi/chat', async (req, res) => {
   }
   if (isExpired()) {
     return res.status(403).json({ error: 'Share expired' });
+  }
+  if (!allowSmopi(req.ip || 'unknown')) {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({ error: 'Too many AI requests. Please wait a minute.' });
   }
   const { message, history } = req.body;
   if (!message || typeof message !== 'string') {
@@ -625,7 +838,7 @@ app.post('/api/smopi/chat', async (req, res) => {
     res.json(result);
   } catch (err: any) {
     console.error('Smopi chat route error:', err);
-    res.status(500).json({ error: err.message || 'Smopi failed to process request' });
+    res.status(500).json({ error: 'Smopi failed to process request' });
   }
 });
 
@@ -787,14 +1000,21 @@ app.post('/api/download-selected', (req, res) => {
   }
 
   res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', 'attachment; filename="selected_files.zip"');
+  res.setHeader('Content-Disposition', contentDisposition('selected_files.zip'));
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 
-  const archive = archiver('zip', { store: true });
+  const archive = new ZipArchive({ store: true });
   archive.on('error', (err: any) => {
     console.error('ZIP archiver error:', err);
     if (!res.headersSent) {
       res.status(500).send('Archiving error');
+    }
+  });
+  archive.on('warning', (err: any) => {
+    if (err && err.code === 'ENOENT') {
+      console.warn('ZIP archiver warning (file vanished):', err.message);
+    } else {
+      archive.emit('error', err);
     }
   });
 
@@ -833,20 +1053,25 @@ app.post('/stop-share', (req, res) => {
   if (!isSessionValid(req)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  if (!isOwner(req)) {
+    return res.status(403).json({ error: 'Only the share owner can stop the share.' });
+  }
   state.stopped = true;
   state.stopReason = 'stopped from dashboard';
   sessions.clear(); // revoke all sessions
   res.json({ success: true });
 });
 
-// API: Full server restart/refresh (Requires valid session)
+// API: Full server restart/refresh (Requires owner session)
 app.post('/api/restart', (req, res) => {
   if (!isSessionValid(req)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  sessions.clear();
+  if (!isOwner(req)) {
+    return res.status(403).json({ error: 'Only the share owner can restart the share.' });
+  }
   initializeState();
-  res.json({ success: true });
+  res.json({ success: true, share_password: state.password, ownerToken: state.ownerToken });
 });
 
 // API: Single File download streaming with Range support
@@ -867,6 +1092,11 @@ app.get('/download/:name', (req, res) => {
   const stat = fs.statSync(fullPath);
   const size = stat.size;
   const mime = getMimeType(filename);
+
+  // Guard against serving active content (SVG/HTML/XML/JS/CSS/JSON) with a
+  // browser-executable content type — force it to a neutral binary download.
+  const forcedDownload = !isInlineImageExt(filename) && mime !== 'application/octet-stream';
+  const contentType = forcedDownload ? 'application/octet-stream' : mime;
 
   let start = 0;
   let end = size - 1;
@@ -901,8 +1131,8 @@ app.get('/download/:name', (req, res) => {
   const chunksize = (end - start) + 1;
   state.activeDownloads++;
 
-  res.setHeader('Content-Type', mime);
-  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', contentDisposition(filename));
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   res.setHeader('Accept-Ranges', state.oneTime ? 'none' : 'bytes');
 
@@ -947,6 +1177,11 @@ app.get('/download/:name', (req, res) => {
     }
   });
 
+  stream.on('close', () => {
+    // Fallback in case 'end' never fired (client abort mid-stream)
+    cleanupActive();
+  });
+
   stream.on('error', (err) => {
     console.error('Download stream error:', err);
     cleanupActive();
@@ -970,16 +1205,23 @@ app.get('/download-all', async (req, res) => {
   }
 
   res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', 'attachment; filename="files.zip"');
+  res.setHeader('Content-Disposition', contentDisposition('files.zip'));
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 
   // Fast archiving without CPU compression load (ZIP_STORED)
-  const archive = archiver('zip', { store: true });
+  const archive = new ZipArchive({ store: true });
 
   archive.on('error', (err: any) => {
     console.error('ZIP archiver error:', err);
     if (!res.headersSent) {
       res.status(500).send('Archiving error');
+    }
+  });
+  archive.on('warning', (err: any) => {
+    if (err && err.code === 'ENOENT') {
+      console.warn('ZIP archiver warning (file vanished):', err.message);
+    } else {
+      archive.emit('error', err);
     }
   });
 
@@ -1038,7 +1280,7 @@ async function startServer() {
     // Production compiled static assets
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

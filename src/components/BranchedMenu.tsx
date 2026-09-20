@@ -1,4 +1,4 @@
-import React, { isValidElement, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import React, { isValidElement, useLayoutEffect, useRef, useState } from 'react';
 import {
   Folder,
   FileText,

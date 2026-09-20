@@ -11,7 +11,6 @@ import {
   Bot,
   User,
   CheckCircle2,
-  AlertCircle,
   RefreshCw,
   FileText,
   Copy,
@@ -25,7 +24,6 @@ interface SmopiDrawerProps {
   files: SharedFile[];
   onFilesChanged: () => void;
   authToken: string | null;
-  onOpenFilePreview?: (fileName: string) => void;
 }
 
 export const SmopiDrawer: React.FC<SmopiDrawerProps> = ({
@@ -33,8 +31,7 @@ export const SmopiDrawer: React.FC<SmopiDrawerProps> = ({
   onClose,
   files,
   onFilesChanged,
-  authToken,
-  onOpenFilePreview
+  authToken
 }) => {
   const [messages, setMessages] = useState<SmopiMessage[]>(() => [
     {

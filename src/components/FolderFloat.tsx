@@ -217,7 +217,7 @@ export default function FolderFloat({
       bottom: -lift + Math.max(...w.sizes.map(s => s.h))
     };
     w.zone = zone;
-    w.bodies = els.map((el, i) => {
+    w.bodies = els.map((_el, i) => {
       const { w: bw, h: bh } = w.sizes[i];
       const b = Bodies.rectangle(pos[i].x, pos[i].y + bh / 2, bw, bh, {
         chamfer: { radius: Math.min(bh / 2 - 1, 16) },

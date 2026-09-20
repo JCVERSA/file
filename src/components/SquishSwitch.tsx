@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import React, { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { animate, motion, useMotionValue, useReducedMotion } from 'motion/react';
 
 import './SquishSwitch.css';

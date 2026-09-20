@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, RefreshCw, FileDown, Edit3, Sparkles } from 'lucide-react';
+import { X, RefreshCw, FileDown, Edit3, Sparkles, FileImage } from 'lucide-react';
 import type { SharedFile, PreviewData } from '../types';
 
 interface FilePreviewModalProps {
@@ -125,18 +125,31 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
               <span className="muted">Loading preview…</span>
             </div>
           ) : previewData?.type === 'image' && previewData.url ? (
-            <img
-              src={previewData.url}
-              alt={previewFile.name}
-              referrerPolicy="no-referrer"
-              style={{
-                maxWidth: '100%',
-                maxHeight: '48vh',
-                objectFit: 'contain',
-                borderRadius: '8px',
-                boxShadow: '0 8px 32px rgba(0,0,0,0.3)'
-              }}
-            />
+            previewData.svg ? (
+              // SVGs are served as downloads, not rendered inline (stored XSS).
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', maxWidth: '360px', textAlign: 'center' }}>
+                <div style={{ backgroundColor: 'rgba(255,255,255,0.03)', padding: '24px', borderRadius: '50%', border: '1px solid rgba(255,255,255,0.05)' }}>
+                  <FileImage className="w-12 h-12 text-slate-400" />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '0 0 4px', color: 'var(--text)' }}>SVG Preview Unavailable</h3>
+                  <p className="muted" style={{ fontSize: '13px', margin: 0 }}>SVG files can contain scripts, so they are downloaded rather than rendered inline. Use the download button to view this file.</p>
+                </div>
+              </div>
+            ) : (
+              <img
+                src={previewData.url}
+                alt={previewFile.name}
+                referrerPolicy="no-referrer"
+                style={{
+                  maxWidth: '100%',
+                  maxHeight: '48vh',
+                  objectFit: 'contain',
+                  borderRadius: '8px',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.3)'
+                }}
+              />
+            )
           ) : previewData?.type === 'text' && previewData.content !== undefined ? (
             <pre style={{
               width: '100%',
